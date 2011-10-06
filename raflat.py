@@ -30,6 +30,12 @@ def some(itr):
 def spliz(pattern, string):
     return some(map(unicode.strip, re.split(pattern, string)))
 
+def match(pattern, string):
+    return re.match(pattern, string, re.I | re.U)
+
+def search(pattern, string):
+    return re.search(pattern, string, re.I | re.U)
+
 class BaseRafla(object):
     pass
 
@@ -55,15 +61,15 @@ class Ruokasali(BaseRafla):
     def scrape_menu(cls):
         rs = urlfetch.fetch('http://ruokasali.fi/lounas.html')
         assert rs.status_code == 200
-        menu, = re.search(ur'<h1><br /><br />Lounaslista(.*)<strong>TERVETULOA!', decode_content(rs)).groups()
+        menu, = search(ur'<h1><br /><br />Lounaslista(.*)<strong>TERVETULOA!', decode_content(rs)).groups()
         servings = reduce(lambda ss, d: ss + maybe([], cls._scrape_servings, d),
-                          re.split(r'<strong>\w+ (?=\d+\.\d+)', menu),
+                          spliz(r'<strong>\w+ (?=\d+\.\d+)', menu),
                           [])
         return servings
 
     @classmethod
     def _scrape_servings(cls, menu):
-        day_menu = re.match(ur'(\d+)\.(\d+).+?<p>(.+)Jälkiruoka(.*)Grillistä(.+)', menu)
+        day_menu = match(ur'(\d+)\.(\d+).+?<p>(.+)Jälkiruoka(.*)Grillistä(.+)', menu)
         assert day_menu
         d, m, basic, dessert, value = day_menu.groups()
         start = datetime.datetime(2011, int(m), int(d), 10, 30)
