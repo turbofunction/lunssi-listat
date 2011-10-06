@@ -19,8 +19,14 @@ def decode_content(response):
     encoding = re.search(r"charset=(.+)$", response.headers.get('content-type', ''))
     if encoding:
         return content.decode(encoding.group(1))
-    else:
+    for enc in ('utf-8', 'iso-8859-15', 'iso-8859-1', 'utf-16'):
+        if re.search("text/html; charset=%s" % enc, content, re.I):
+            return content.decode(enc)
+    try:
         return content.decode('utf-8')
+    except UnicodeDecodeError:
+        # just wrap
+        return unicode(content)
 
 def maybe(default, fn, *args, **kw):
     try:
@@ -62,8 +68,16 @@ def match(pattern, string):
 def search(pattern, string):
     return re.search(pattern, string, re.I | re.U | re.S)
 
-def strptime(datestr, pattern):
-    return datetime.strptime('%d-%s' % (datetime.now().year, datestr), '%Y-' + pattern)
+def searchx(pattern, string):
+    return re.search(pattern, string, re.I | re.U | re.S | re.X)
+
+def strptime(datestr, *patterns):
+    for p in patterns:
+        try:
+            return datetime.strptime('%d-%s' % (datetime.now().year, datestr), '%Y-' + p)
+        except ValueError, err:
+            pass
+    raise err
 
 def dec_ents(string):
     while True:
@@ -89,9 +103,9 @@ class Serving(db.Model):
 
     def __unicode__(self):
         if self.price[1:]:
-            price = '%.2f€-%.2f€' % (self.price[0] / 100., self.price[-1] / 100.)
+            price = u'%.2f€-%.2f€' % (self.price[0] / 100., self.price[-1] / 100.)
         elif self.price[0:]:
-            price = '%.2f€' % (self.price[0] / 100.)
+            price = u'%.2f€' % (self.price[0] / 100.)
         else:
             price = '-'
         return u"%s [%s] (%s) from %s till %s" \
@@ -135,8 +149,8 @@ class Rivoletto(BaseRafla):
         assert rs.status_code == 200
         starth, endh, damo, menu = \
             search(ur"arkisin klo (\d+)-(\d+).*?LOUNAS .*? (\d+\.\d+)(.*)Albertinkatu", decode_content(rs)).groups()
-        start = datetime.strptime(damo, '%d.%m') + timedelta(hours=int(starth))
-        end = datetime.strptime(damo, '%d.%m') + timedelta(hours=int(endh))
+        start = strptime(damo, '%d.%m') + timedelta(hours=int(starth))
+        end = strptime(damo, '%d.%m') + timedelta(hours=int(endh))
         servings = reduce(lambda ss, daymenu:
                               ss + maybe([], cls._scrape_servings, daymenu, start, end),
                           spliz(r"<p.*?>", menu),
@@ -180,3 +194,43 @@ class KonstanMolja(BaseRafla):
         if servings[1:]:
             servings[-1].food_type = ['dessert']
         return servings
+
+
+class RavintolaVPK(BaseRafla):
+    @classmethod
+    def scrape_menu(cls):
+        rs = urlfetch.fetch("http://www.restaurantwalhalla.com/vpk/lounas.php")
+        assert rs.status_code == 200
+        startd, mo, startt, endt, eur, cnt, menu, special = \
+            searchx(ur"""
+                viikko.*?(\d+)-\d+.(\d+) +([\d\.]+).+?([\d\.]+).*
+                kotiruoka.(\d+),(\d+) # price
+                (.*) # homefood menu
+                Keittiömestarin.suositus:
+                (.*) # "special" menu
+                Lounas.sisältää
+                """, decode_content(rs)).groups()
+        basedates = [strptime('%s-%s %s' % (mo, startd, t), '%m-%d %H.%M', '%m-%d %H')
+                     for t in [startt, endt]]
+        dates = lambda i: [d + timedelta(days=1 + i) for d in basedates]
+        price = int(eur) * 100 + int(cnt)
+        # first parse the basic foods
+        servings = [(i, maybe([], cls._scrape_basic, daymenu, price, *dates(i)))
+                    for i, daymenu in enumerate(spliz(r'<br>\w{2} <b>', menu))]
+        # then decorate every successful parse with specials
+        servings = reduce(lambda ss, (i, m):
+                              ss + m + (maybe([], cls._scrape_special, special, *dates(i)) if m else []),
+                          servings,
+                          [])
+        return servings
+
+    @classmethod
+    def _scrape_basic(cls, menu, price, start, end):
+        return [Serving(name=dec_ents(name), price=[price], start=start, end=end)
+                for name in spliz(r"<.+>", menu)]
+
+    @classmethod
+    def _scrape_special(cls, menu, start, end):
+        return [Serving(name=dec_ents(name), price=[int(eur) * 100 + int(cnt)], start=start, end=end)
+                for name, eur, cnt
+                in [search(" *(.*) +(\d+),(\d+)", m).groups() for m in spliz(r"<.+?>", menu)]]
