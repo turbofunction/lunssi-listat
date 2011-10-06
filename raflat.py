@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from datetime import datetime, timedelta
+import htmlentitydefs
 import logging
 import re
 
@@ -63,6 +64,17 @@ def search(pattern, string):
 
 def strptime(datestr, pattern):
     return datetime.strptime('%d-%s' % (datetime.now().year, datestr), '%Y-' + pattern)
+
+def dec_ents(string):
+    while True:
+        m= re.search('&(\w{4});', string)
+        if not m:
+            break
+        string = string[:m.start()] \
+                 + unichr(htmlentitydefs.name2codepoint[m.group(1)]) \
+                 + string[m.end():]
+    return string
+
 
 class BaseRafla(object):
     pass
@@ -163,7 +175,7 @@ class KonstanMolja(BaseRafla):
 
     @classmethod
     def _scrape_servings(cls, menu, price, start, end):
-        servings = [Serving(name=name, price=[price], start=start, end=end)
+        servings = [Serving(name=dec_ents(name), price=[price], start=start, end=end)
                     for name in spliz(r"<.+>", menu)]
         if servings[1:]:
             servings[-1].food_type = ['dessert']
