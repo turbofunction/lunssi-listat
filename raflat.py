@@ -28,7 +28,6 @@ class Serving(db.Model):
                % (self.name, price, self.start, self.end)
 
 class Ruokasali(BaseRafla):
-
     @classmethod
     def scrape_menu(cls):
         rs = urlfetch.fetch('http://ruokasali.fi/lounas.html')
