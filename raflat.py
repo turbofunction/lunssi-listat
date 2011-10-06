@@ -107,7 +107,7 @@ class Serving(db.Model):
         elif self.price[0:]:
             price = u'%.2f€' % (self.price[0] / 100.)
         else:
-            price = '-'
+            price = u'-'
         return u"%s [%s] (%s) from %s till %s" \
                % (self.name, ', '.join(self.food_type), price, self.start, self.end)
 
