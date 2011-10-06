@@ -61,6 +61,8 @@ def match(pattern, string):
 def search(pattern, string):
     return re.search(pattern, string, re.I | re.U | re.S)
 
+def strptime(datestr, pattern):
+    return datetime.strptime('%d-%s' % (datetime.now().year, datestr), '%Y-' + pattern)
 
 class BaseRafla(object):
     pass
@@ -90,22 +92,21 @@ class Ruokasali(BaseRafla):
         rs = urlfetch.fetch("http://ruokasali.fi/lounas.html")
         assert rs.status_code == 200
         starth, startm, endh, endm, menu = \
-            search(ur"Lounaslista.*?klo (\d+).(\d+).+?(\d+).(\d+)(.*)<strong>TERVETULOA!",
-                   decode_content(rs))\
-                .groups()
-        starting = timedelta(hours=int(starth), minutes=int(startm))
-        ending = timedelta(hours=int(endh), minutes=int(endm))
-        servings = reduce(lambda ss, d: ss + maybe([], cls._scrape_servings, d, starting, ending),
+            search(ur"Lounaslista.*?klo (\d+).(\d+).+?(\d+).(\d+)(.*)<strong>TERVETULOA!", decode_content(rs)).groups()
+        start = timedelta(hours=int(starth), minutes=int(startm))
+        end = timedelta(hours=int(endh), minutes=int(endm))
+        servings = reduce(lambda ss, daymenu:
+                              ss + maybe([], cls._scrape_servings, daymenu, start, end),
                           spliz(r"<strong>\w+ (?=\d+\.\d+)", menu),
                           [])
         return servings
 
     @classmethod
-    def _scrape_servings(cls, menu, starting, ending):
-        d, m, basic, dessert, value = \
-            match(ur"(\d+)\.(\d+).+?<p>(.+)Jälkiruoka(.*)Grillistä(.+)", menu).groups()
-        start = datetime(2011, int(m), int(d)) + starting
-        end = datetime(2011, int(m), int(d)) + ending
+    def _scrape_servings(cls, menu, start, end):
+        damo, basic, dessert, value = \
+            match(ur"(\d+\.\d+).+?<p>(.+)Jälkiruoka(.*)Grillistä(.+)", menu).groups()
+        start = strptime(damo, '%d.%m') + start
+        end = strptime(damo, '%d.%m') + end
         servings = [Serving(name=name, price=[900], start=start, end=end)
                     for name in spliz(r"<.+?>", basic)]
         servings += [Serving(name=name, price=[], start=start, end=end, food_type=['dessert'])
@@ -120,17 +121,50 @@ class Rivoletto(BaseRafla):
     def scrape_menu(cls):
         rs = urlfetch.fetch('http://www.rivolirestaurants.fi/rivoletto/lounas_txt.html')
         assert rs.status_code == 200
-        starth, endh, da, mo, menu = \
-            search(ur"arkisin klo (\d+)-(\d+).*?LOUNAS .*? (\d+)\.(\d+)(.*)Albertinkatu", decode_content(rs)).groups()
-        starting = datetime(2011, int(mo), int(da), int(starth))
-        ending = datetime(2011, int(mo), int(da), int(endh))
-        servings = reduce(lambda ss, d: ss + maybe([], cls._scrape_servings, d, starting, ending),
+        starth, endh, damo, menu = \
+            search(ur"arkisin klo (\d+)-(\d+).*?LOUNAS .*? (\d+\.\d+)(.*)Albertinkatu", decode_content(rs)).groups()
+        start = datetime.strptime(damo, '%d.%m') + timedelta(hours=int(starth))
+        end = datetime.strptime(damo, '%d.%m') + timedelta(hours=int(endh))
+        servings = reduce(lambda ss, daymenu:
+                              ss + maybe([], cls._scrape_servings, daymenu, start, end),
                           spliz(r"<p.*?>", menu),
                           [])
         return servings
 
     @classmethod
-    def _scrape_servings(cls, menu, starting, ending):
+    def _scrape_servings(cls, menu, start, end):
         name, eur, cnt = match(r"(.*?) (\d+),(\d+) *<br", menu).groups()
-        servings = [Serving(name=name, price=[int(eur) * 100 + int(cnt)], start=starting, end=ending)]
+        servings = [Serving(name=name, price=[int(eur) * 100 + int(cnt)], start=start, end=end)]
+        return servings
+
+
+class KonstanMolja(BaseRafla):
+    @classmethod
+    def scrape_menu(cls):
+        rs = urlfetch.fetch("http://www.kolumbus.fi/konstanmolja/lounas_fi.html")
+        assert rs.status_code == 200
+        start, end, eur, cnt, week, menu = \
+            search(ur"Ti-.*? (\d+.\d+)-(\d+.\d+).*?(\d+),(\d+).*?vko (\d+)(.*)", decode_content(rs)).groups()
+        # calculating from monday to avoid complications with partial weeks
+        basedates = [strptime('%s-0 %s' % (week, start), '%U-%w %H.%M'),
+                     strptime('%s-0 %s' % (week, end), '%U-%w %H.%M')]
+        dates = lambda i: [d + timedelta(days=1 + i) for d in basedates]
+        price = int(eur) * 100 + int(cnt)
+        # consuming one i here for the foobar fragment before Tuesday's menu
+        servings = reduce(lambda ss, (i, daymenu):
+                              ss + maybe([],
+                                         cls._scrape_servings,
+                                         daymenu,
+                                         price,
+                                         *dates(i)),
+                          enumerate(spliz(r'<div align="center">', menu)),
+                          [])
+        return servings
+
+    @classmethod
+    def _scrape_servings(cls, menu, price, start, end):
+        servings = [Serving(name=name, price=[price], start=start, end=end)
+                    for name in spliz(r"<.+>", menu)]
+        if servings[1:]:
+            servings[-1].food_type = ['dessert']
         return servings
